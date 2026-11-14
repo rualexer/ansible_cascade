@@ -1,0 +1,40 @@
+# Real infrastructure inventory. Commit only inventory.example.yml.
+/inventory*
+!/inventory.example.yml
+
+# Credentials, vault passwords, SSH keys and local environment.
+/.env
+/.env.*
+!/.env.example
+/secrets/
+/secrets*.yml
+/vault-password*
+/host_vars/
+*.pem
+*.key
+*.p12
+id_rsa*
+id_ed25519*
+
+# Runtime output and backups.
+/output/
+/artifacts/
+/backups/
+*.db
+*.sqlite
+*.sqlite3
+*.retry
+*.log
+*.tmp
+*.bak
+
+# Editor, OS and Python/Ansible caches.
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+__pycache__/
+*.py[cod]
+.ansible/
+.cache/

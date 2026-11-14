@@ -1,0 +1,52 @@
+{
+  "enable": true,
+  "remark": {{ ru_inbound_remark | to_json }},
+  "listen": "",
+  "port": 443,
+  "protocol": "vless",
+  "expiryTime": 0,
+  "total": 0,
+  "settings": {
+    "clients": [],
+    "decryption": "none",
+    "fallbacks": []
+  },
+  "streamSettings": {
+    "network": "xhttp",
+    "security": "reality",
+    "externalProxy": [],
+    "realitySettings": {
+      "show": false,
+      "xver": 0,
+      "target": {{ (ru_secrets.ru_reality_target ~ ':443') | to_json }},
+      "serverNames": [{{ ru_secrets.ru_reality_target | to_json }}],
+      "privateKey": {{ ru_secrets.ru_reality_private_key | to_json }},
+      "minClientVer": "1.0.0",
+      "maxClientVer": "",
+      "maxTimeDiff": 0,
+      "shortIds": [{{ ru_secrets.ru_reality_short_id | to_json }}],
+      "settings": {
+        "publicKey": {{ ru_secrets.ru_reality_public_key | to_json }},
+        "fingerprint": "chrome",
+        "serverName": "",
+        "spiderX": "/",
+        "mldsa65Verify": ""
+      }
+    },
+    "xhttpSettings": {
+      "host": "",
+      "path": {{ ru_secrets.ru_xhttp_path | to_json }},
+      "mode": "auto",
+      "extra": {}
+    },
+    "sockopt": {
+      "tcpNoDelay": true
+    }
+  },
+  "sniffing": {
+    "enabled": true,
+    "destOverride": ["http", "tls", "quic", "fakedns"],
+    "metadataOnly": false,
+    "routeOnly": true
+  }
+}

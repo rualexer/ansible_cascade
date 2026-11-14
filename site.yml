@@ -1,0 +1,37 @@
+---
+- name: Validate the two-server inventory
+  hosts: localhost
+  gather_facts: false
+  roles:
+    - role: preflight
+
+- name: Configure the foreign exit server
+  hosts: exit
+  become: true
+  gather_facts: true
+  roles:
+    - role: exit_node
+
+- name: Configure the RU ingress and split routing
+  hosts: ru
+  become: true
+  gather_facts: true
+  vars:
+    exit_host_name: "{{ groups['exit'][0] }}"
+    exit_public_ip: "{{ hostvars[exit_host_name].vpn_public_ip | default(hostvars[exit_host_name].ansible_host) }}"
+    exit_secrets: "{{ hostvars[exit_host_name].exit_secrets }}"
+    ru_public_ip: "{{ vpn_public_ip | default(ansible_host) }}"
+  roles:
+    - role: ru_gateway
+
+- name: Run an end-to-end client test through RU and exit
+  hosts: exit
+  become: true
+  gather_facts: false
+  vars:
+    ru_host_name: "{{ groups['ru'][0] }}"
+    ru_public_ip: "{{ hostvars[ru_host_name].vpn_public_ip | default(hostvars[ru_host_name].ansible_host) }}"
+    ru_secrets: "{{ hostvars[ru_host_name].ru_secrets }}"
+    exit_public_ip: "{{ vpn_public_ip | default(ansible_host) }}"
+  roles:
+    - role: e2e_verify

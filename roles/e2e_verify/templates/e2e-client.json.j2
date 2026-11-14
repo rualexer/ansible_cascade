@@ -1,0 +1,51 @@
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "tag": "socks",
+      "listen": "127.0.0.1",
+      "port": 19080,
+      "protocol": "socks",
+      "settings": {
+        "udp": true
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "tag": "ru",
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": {{ ru_public_ip | to_json }},
+            "port": 443,
+            "users": [
+              {
+                "id": {{ ru_secrets.owner_uuid | to_json }},
+                "encryption": "none"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "xhttp",
+        "security": "reality",
+        "realitySettings": {
+          "serverName": {{ ru_secrets.ru_reality_target | to_json }},
+          "fingerprint": "chrome",
+          "password": {{ ru_secrets.ru_reality_public_key | to_json }},
+          "shortId": {{ ru_secrets.ru_reality_short_id | to_json }},
+          "spiderX": "/"
+        },
+        "xhttpSettings": {
+          "path": {{ ru_secrets.ru_xhttp_path | to_json }},
+          "mode": "auto"
+        }
+      }
+    }
+  ]
+}

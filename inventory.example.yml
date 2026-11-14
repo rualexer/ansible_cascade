@@ -1,0 +1,15 @@
+---
+all:
+  children:
+    ru:
+      hosts:
+        ru_gateway:
+          ansible_host: 203.0.113.10
+          ansible_user: root
+          # vpn_public_ip: 203.0.113.10  # only if different from ansible_host
+    exit:
+      hosts:
+        exit_node:
+          ansible_host: 198.51.100.20
+          ansible_user: root
+          # vpn_public_ip: 198.51.100.20  # only if different from ansible_host

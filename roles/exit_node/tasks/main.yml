@@ -1,0 +1,118 @@
+- name: Require Debian or Ubuntu on x86_64
+  ansible.builtin.assert:
+    that:
+      - ansible_os_family == 'Debian'
+      - ansible_architecture in ['x86_64', 'amd64']
+    fail_msg: This deployment currently supports x86_64 Debian/Ubuntu only.
+
+- name: Install exit-server prerequisites
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - jq
+      - openssl
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Download the official Xray installer
+  ansible.builtin.get_url:
+    url: https://github.com/XTLS/Xray-install/raw/main/install-release.sh
+    dest: /usr/local/sbin/xray-install-release.sh
+    owner: root
+    group: root
+    mode: '0700'
+
+- name: Read the installed Xray version
+  ansible.builtin.command: /usr/local/bin/xray version
+  register: exit_xray_version
+  changed_when: false
+  failed_when: false
+
+- name: Install the pinned Xray version
+  ansible.builtin.command:
+    argv:
+      - /usr/local/sbin/xray-install-release.sh
+      - install
+      - --version
+      - "{{ xray_version }}"
+  when: (xray_version | regex_replace('^v', '')) not in (exit_xray_version.stdout | default(''))
+
+- name: Probe the exit-server REALITY target
+  ansible.builtin.command:
+    argv:
+      - /usr/local/bin/xray
+      - tls
+      - ping
+      - "{{ exit_reality_target }}:443"
+  register: exit_reality_probe
+  changed_when: false
+
+- name: Require TLS 1.3 from the exit-server REALITY target
+  ansible.builtin.assert:
+    that:
+      - "'TLS 1.3' in (exit_reality_probe.stdout ~ exit_reality_probe.stderr)"
+    fail_msg: "Exit REALITY target {{ exit_reality_target }} does not advertise TLS 1.3."
+
+- name: Install the exit-server secret generator
+  ansible.builtin.copy:
+    src: generate-exit-secrets.sh
+    dest: /usr/local/sbin/generate-split-vpn-exit-secrets
+    owner: root
+    group: root
+    mode: '0700'
+
+- name: Generate persistent exit-server secrets once
+  ansible.builtin.command:
+    argv:
+      - /usr/local/sbin/generate-split-vpn-exit-secrets
+      - /root/split-vpn-secrets.json
+      - "{{ exit_reality_target }}"
+      - /usr/local/bin/xray
+    creates: /root/split-vpn-secrets.json
+  no_log: true
+
+- name: Read exit-server secrets
+  ansible.builtin.slurp:
+    src: /root/split-vpn-secrets.json
+  register: exit_secrets_file
+  no_log: true
+
+- name: Load exit-server secrets as facts
+  ansible.builtin.set_fact:
+    exit_secrets: "{{ exit_secrets_file.content | b64decode | from_json }}"
+  no_log: true
+
+- name: Render and validate the exit-server Xray configuration
+  ansible.builtin.template:
+    src: exit-xray.json.j2
+    dest: /usr/local/etc/xray/config.json
+    owner: root
+    group: xray
+    mode: '0640'
+    backup: true
+    validate: /usr/local/bin/xray run -test -config %s
+  notify: Restart Xray
+
+- name: Apply pending exit-server service changes
+  ansible.builtin.meta: flush_handlers
+
+- name: Ensure Xray is enabled and running on the exit server
+  ansible.builtin.systemd_service:
+    name: xray
+    state: started
+    enabled: true
+
+- name: Wait for the exit transit listener
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: 443
+    timeout: 20
+
+- name: Verify exit-server secret file permissions
+  ansible.builtin.file:
+    path: /root/split-vpn-secrets.json
+    owner: root
+    group: root
+    mode: '0600'

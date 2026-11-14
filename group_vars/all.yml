@@ -1,0 +1,28 @@
+---
+# Pinned versions make a deployment repeatable. Test upgrades before changing.
+xray_version: v26.11.9
+xui_version: v3.7.0
+
+# REALITY camouflage targets. They must support TLS 1.3 and be reachable from
+# the respective server. A domain owned by you is not required.
+ru_reality_target: yandex.ru
+# Select a stable TLS 1.3 site reachable from the chosen exit location.
+exit_reality_target: www.hostkey.com
+
+ru_inbound_remark: RU XHTTP REALITY
+owner_email: owner
+
+# Domains in category-ru and RU IP ranges leave directly from RU. These
+# services are forced through the foreign exit before RU rules are evaluated.
+forced_exit_geosites:
+  - youtube
+  - telegram
+forced_exit_geoips:
+  - telegram
+
+# Used only for the final routing self-test.
+ru_direct_test_domain: yandex.ru
+foreign_test_domain: api.ipify.org
+
+# Local port shown in the SSH tunnel command. It is never opened remotely.
+panel_tunnel_local_port: 12053

@@ -1,0 +1,70 @@
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "tag": "ru-transit-in",
+      "listen": "0.0.0.0",
+      "port": 443,
+      "protocol": "vless",
+      "settings": {
+        "users": [
+          {
+            "id": {{ exit_secrets.exit_transit_uuid | to_json }},
+            "email": "ru-transit"
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "method": "xhttp",
+        "security": "reality",
+        "realitySettings": {
+          "show": false,
+          "target": {{ (exit_secrets.exit_reality_target ~ ':443') | to_json }},
+          "xver": 0,
+          "serverNames": [{{ exit_secrets.exit_reality_target | to_json }}],
+          "privateKey": {{ exit_secrets.exit_reality_private_key | to_json }},
+          "shortIds": [{{ exit_secrets.exit_reality_short_id | to_json }}]
+        },
+        "xhttpSettings": {
+          "path": {{ exit_secrets.exit_xhttp_path | to_json }},
+          "mode": "auto"
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "tag": "direct",
+      "protocol": "freedom",
+      "settings": {},
+      "streamSettings": {
+        "sockopt": {
+          "domainStrategy": "UseIPv4"
+        }
+      }
+    },
+    {
+      "tag": "blocked",
+      "protocol": "blackhole",
+      "settings": {}
+    }
+  ],
+  "routing": {
+    "domainStrategy": "IPIfNonMatch",
+    "rules": [
+      {
+        "type": "field",
+        "ip": ["geoip:private"],
+        "outboundTag": "blocked"
+      },
+      {
+        "type": "field",
+        "protocol": ["bittorrent"],
+        "outboundTag": "blocked"
+      }
+    ]
+  }
+}

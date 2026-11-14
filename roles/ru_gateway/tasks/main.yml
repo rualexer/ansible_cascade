@@ -1,0 +1,473 @@
+- name: Require Debian or Ubuntu on x86_64
+  ansible.builtin.assert:
+    that:
+      - ansible_os_family == 'Debian'
+      - ansible_architecture in ['x86_64', 'amd64']
+    fail_msg: This deployment currently supports x86_64 Debian/Ubuntu only.
+
+- name: Install RU prerequisites
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - iproute2
+      - jq
+      - nftables
+      - openssl
+      - sqlite3
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Check for an existing 3x-ui database
+  ansible.builtin.stat:
+    path: /etc/x-ui/x-ui.db
+  register: xui_database
+
+- name: Install the private 3x-ui installer
+  ansible.builtin.copy:
+    src: install-3x-ui-private.sh
+    dest: /usr/local/sbin/install-3x-ui-private
+    owner: root
+    group: root
+    mode: '0700'
+
+- name: Install the 3x-ui verifier
+  ansible.builtin.copy:
+    src: verify-3x-ui-private.sh
+    dest: /usr/local/sbin/verify-3x-ui-private
+    owner: root
+    group: root
+    mode: '0700'
+
+- name: Install pinned 3x-ui with a loopback-only panel
+  ansible.builtin.command: /usr/local/sbin/install-3x-ui-private
+  environment:
+    XUI_VERSION: "{{ xui_version }}"
+    XUI_SSH_PORT: "{{ ansible_port | default(22) }}"
+  when: not xui_database.stat.exists
+
+- name: Verify private panel binding
+  ansible.builtin.command: /usr/local/sbin/verify-3x-ui-private
+  changed_when: false
+
+- name: Read private panel credentials
+  ansible.builtin.shell: |
+    set -euo pipefail
+    set -a
+    source /etc/x-ui/install-result.env
+    set +a
+    jq -n \
+      --arg username "$XUI_USERNAME" \
+      --arg password "$XUI_PASSWORD" \
+      --argjson port "$XUI_PANEL_PORT" \
+      --arg base_path "$XUI_WEB_BASE_PATH" \
+      --arg token "$XUI_API_TOKEN" \
+      '{username:$username,password:$password,port:$port,base_path:$base_path,token:$token}'
+  args:
+    executable: /bin/bash
+  register: xui_credentials_command
+  changed_when: false
+  no_log: true
+
+- name: Load private panel credentials
+  ansible.builtin.set_fact:
+    xui_credentials: "{{ xui_credentials_command.stdout | from_json }}"
+  no_log: true
+
+- name: Define the local-only panel API URL
+  ansible.builtin.set_fact:
+    xui_api_url: "http://127.0.0.1:{{ xui_credentials.port }}/{{ xui_credentials.base_path }}/panel/api"
+    xui_api_headers:
+      Authorization: "Bearer {{ xui_credentials.token }}"
+  no_log: true
+
+- name: Read the installed 3x-ui status
+  ansible.builtin.uri:
+    url: "{{ xui_api_url }}/server/status"
+    method: GET
+    headers: "{{ xui_api_headers }}"
+    return_content: true
+    status_code: 200
+  register: xui_status
+  no_log: true
+
+- name: Require the pinned 3x-ui version
+  ansible.builtin.assert:
+    that:
+      - xui_status.json.success | default(false)
+      - xui_status.json.obj.panelVersion == (xui_version | regex_replace('^v', ''))
+    fail_msg: >-
+      Existing 3x-ui version does not match xui_version. Back up the database
+      and upgrade or downgrade the panel explicitly before continuing.
+
+- name: Probe the RU REALITY target
+  ansible.builtin.command:
+    argv:
+      - /usr/local/x-ui/bin/xray-linux-amd64
+      - tls
+      - ping
+      - "{{ ru_reality_target }}:443"
+  register: ru_reality_probe
+  changed_when: false
+
+- name: Require TLS 1.3 from the RU REALITY target
+  ansible.builtin.assert:
+    that:
+      - "'TLS 1.3' in (ru_reality_probe.stdout ~ ru_reality_probe.stderr)"
+    fail_msg: "RU REALITY target {{ ru_reality_target }} does not advertise TLS 1.3."
+
+- name: Install the RU secret generator
+  ansible.builtin.copy:
+    src: generate-ru-secrets.sh
+    dest: /usr/local/sbin/generate-split-vpn-ru-secrets
+    owner: root
+    group: root
+    mode: '0700'
+
+- name: Generate persistent RU secrets once
+  ansible.builtin.command:
+    argv:
+      - /usr/local/sbin/generate-split-vpn-ru-secrets
+      - /root/split-vpn-secrets.json
+      - "{{ ru_reality_target }}"
+      - /usr/local/x-ui/bin/xray-linux-amd64
+    creates: /root/split-vpn-secrets.json
+  no_log: true
+
+- name: Read RU secrets
+  ansible.builtin.slurp:
+    src: /root/split-vpn-secrets.json
+  register: ru_secrets_file
+  no_log: true
+
+- name: Load RU secrets as facts
+  ansible.builtin.set_fact:
+    ru_secrets: "{{ ru_secrets_file.content | b64decode | from_json }}"
+  no_log: true
+
+- name: Render the RU Xray routing template
+  ansible.builtin.template:
+    src: ru-xray.json.j2
+    dest: /root/split-vpn-xray-template.json
+    owner: root
+    group: root
+    mode: '0600'
+  no_log: true
+
+- name: Read the rendered RU Xray routing template
+  ansible.builtin.slurp:
+    src: /root/split-vpn-xray-template.json
+  register: ru_xray_template_file
+  no_log: true
+
+- name: Apply RU Xray routing through the private 3x-ui API
+  ansible.builtin.uri:
+    url: "{{ xui_api_url }}/xray/update"
+    method: POST
+    headers: "{{ xui_api_headers }}"
+    body_format: form-urlencoded
+    body:
+      xraySetting: "{{ ru_xray_template_file.content | b64decode }}"
+      outboundTestUrl: https://www.google.com/generate_204
+    return_content: true
+    status_code: 200
+  register: xui_xray_update
+  failed_when: not (xui_xray_update.json.success | default(false))
+  no_log: true
+
+- name: Render the client-facing RU inbound
+  ansible.builtin.template:
+    src: ru-inbound.json.j2
+    dest: /root/split-vpn-inbound.json
+    owner: root
+    group: root
+    mode: '0600'
+  no_log: true
+
+- name: Read the rendered RU inbound
+  ansible.builtin.slurp:
+    src: /root/split-vpn-inbound.json
+  register: ru_inbound_file
+  no_log: true
+
+- name: Load the RU inbound payload
+  ansible.builtin.set_fact:
+    ru_inbound_payload: "{{ ru_inbound_file.content | b64decode | from_json }}"
+  no_log: true
+
+- name: List existing inbounds
+  ansible.builtin.uri:
+    url: "{{ xui_api_url }}/inbounds/list"
+    method: GET
+    headers: "{{ xui_api_headers }}"
+    return_content: true
+    status_code: 200
+  register: xui_inbound_list
+  no_log: true
+
+- name: Find the managed RU inbound
+  ansible.builtin.set_fact:
+    managed_inbound_matches: "{{ xui_inbound_list.json.obj | selectattr('remark', 'equalto', ru_inbound_remark) | list }}"
+  no_log: true
+
+- name: Remember the existing RU inbound ID
+  ansible.builtin.set_fact:
+    existing_inbound_id: "{{ managed_inbound_matches[0].id if (managed_inbound_matches | length > 0) else 0 }}"
+  no_log: true
+
+- name: Create the managed RU inbound
+  ansible.builtin.uri:
+    url: "{{ xui_api_url }}/inbounds/add"
+    method: POST
+    headers: "{{ xui_api_headers }}"
+    body_format: json
+    body: "{{ ru_inbound_payload }}"
+    return_content: true
+    status_code: 200
+  register: xui_inbound_add
+  when: (existing_inbound_id | int) == 0
+  failed_when: not (xui_inbound_add.json.success | default(false))
+  no_log: true
+
+- name: Update the managed RU inbound
+  ansible.builtin.uri:
+    url: "{{ xui_api_url }}/inbounds/update/{{ existing_inbound_id }}"
+    method: POST
+    headers: "{{ xui_api_headers }}"
+    body_format: json
+    body: "{{ ru_inbound_payload }}"
+    return_content: true
+    status_code: 200
+  register: xui_inbound_update
+  when: (existing_inbound_id | int) != 0
+  failed_when: not (xui_inbound_update.json.success | default(false))
+  no_log: true
+
+- name: Set the managed RU inbound ID
+  ansible.builtin.set_fact:
+    ru_inbound_id: "{{ existing_inbound_id if (existing_inbound_id | int) != 0 else xui_inbound_add.json.obj.id }}"
+  no_log: true
+
+- name: Check for the owner client
+  ansible.builtin.uri:
+    url: "{{ xui_api_url }}/clients/get/{{ owner_email | urlencode }}"
+    method: GET
+    headers: "{{ xui_api_headers }}"
+    return_content: true
+    status_code: 200
+  register: xui_owner_client
+  no_log: true
+
+- name: Reject a conflicting pre-existing owner identity
+  ansible.builtin.assert:
+    that:
+      - xui_owner_client.json.obj.client.uuid == ru_secrets.owner_uuid
+    fail_msg: >-
+      A client with owner_email already exists but has a different UUID.
+      Choose another owner_email or migrate that client deliberately.
+  when: xui_owner_client.json.success | default(false)
+  no_log: true
+
+- name: Create the owner client
+  ansible.builtin.uri:
+    url: "{{ xui_api_url }}/clients/add"
+    method: POST
+    headers: "{{ xui_api_headers }}"
+    body_format: json
+    body:
+      client:
+        email: "{{ owner_email }}"
+        id: "{{ ru_secrets.owner_uuid }}"
+        totalGB: 0
+        expiryTime: 0
+        tgId: 0
+        limitIp: 0
+        limitHwid: 0
+        enable: true
+        flow: ''
+      inboundIds:
+        - "{{ ru_inbound_id | int }}"
+    return_content: true
+    status_code: 200
+  register: xui_owner_add
+  when: not (xui_owner_client.json.success | default(false))
+  failed_when: not (xui_owner_add.json.success | default(false))
+  no_log: true
+
+- name: Attach an existing owner client to the managed inbound
+  ansible.builtin.uri:
+    url: "{{ xui_api_url }}/clients/{{ owner_email | urlencode }}/attach"
+    method: POST
+    headers: "{{ xui_api_headers }}"
+    body_format: json
+    body:
+      inboundIds:
+        - "{{ ru_inbound_id | int }}"
+    return_content: true
+    status_code: 200
+  register: xui_owner_attach
+  when:
+    - xui_owner_client.json.success | default(false)
+    - (ru_inbound_id | int) not in (xui_owner_client.json.obj.inboundIds | map('int') | list)
+  failed_when: not (xui_owner_attach.json.success | default(false))
+  no_log: true
+
+- name: List host overrides for the RU inbound
+  ansible.builtin.uri:
+    url: "{{ xui_api_url }}/hosts/byInbound/{{ ru_inbound_id }}"
+    method: GET
+    headers: "{{ xui_api_headers }}"
+    return_content: true
+    status_code: 200
+  register: xui_hosts
+  no_log: true
+
+- name: Find the managed public host override
+  ansible.builtin.set_fact:
+    managed_host_matches: "{{ xui_hosts.json.obj | selectattr('remark', 'equalto', 'RU public IP') | list }}"
+  no_log: true
+
+- name: Define the public host override payload
+  ansible.builtin.set_fact:
+    host_override_payload:
+      inboundIds:
+        - "{{ ru_inbound_id | int }}"
+      remark: RU public IP
+      hosts:
+        - "{{ ru_public_ip }}"
+      port: 443
+      security: same
+      sni: "{{ ru_secrets.ru_reality_target }}"
+      path: "{{ ru_secrets.ru_xhttp_path }}"
+      fingerprint: chrome
+      tags:
+        - RU
+  no_log: true
+
+- name: Create the public host override
+  ansible.builtin.uri:
+    url: "{{ xui_api_url }}/hosts/add"
+    method: POST
+    headers: "{{ xui_api_headers }}"
+    body_format: json
+    body: "{{ host_override_payload }}"
+    return_content: true
+    status_code: 200
+  register: xui_host_add
+  when: (managed_host_matches | length) == 0
+  failed_when: not (xui_host_add.json.success | default(false))
+  no_log: true
+
+- name: Update the public host override
+  ansible.builtin.uri:
+    url: "{{ xui_api_url }}/hosts/update/{{ managed_host_matches[0].groupId }}"
+    method: POST
+    headers: "{{ xui_api_headers }}"
+    body_format: json
+    body: "{{ host_override_payload }}"
+    return_content: true
+    status_code: 200
+  register: xui_host_update
+  when: (managed_host_matches | length) > 0
+  failed_when: not (xui_host_update.json.success | default(false))
+  no_log: true
+
+- name: Wait for the public RU VLESS listener
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: 443
+    timeout: 20
+
+- name: Verify RU can reach the exit Xray listener
+  ansible.builtin.wait_for:
+    host: "{{ exit_public_ip }}"
+    port: 443
+    timeout: 15
+
+- name: Verify routing decisions
+  ansible.builtin.uri:
+    url: "{{ xui_api_url }}/xray/routeTest"
+    method: POST
+    headers: "{{ xui_api_headers }}"
+    body_format: form-urlencoded
+    body:
+      domain: "{{ item.domain }}"
+      port: 443
+      network: tcp
+      inboundTag: in-443-tcp
+    return_content: true
+    status_code: 200
+  loop:
+    - domain: "{{ ru_direct_test_domain }}"
+      expected: direct
+    - domain: "{{ foreign_test_domain }}"
+      expected: exit-proxy
+    - domain: www.youtube.com
+      expected: exit-proxy
+    - domain: api.telegram.org
+      expected: exit-proxy
+  register: route_tests
+  failed_when: >-
+    not (route_tests.json.success | default(false)) or
+    (route_tests.json.obj.outboundTag | default('')) != item.expected
+  no_log: true
+
+- name: Export all generated client links
+  ansible.builtin.uri:
+    url: "{{ xui_api_url }}/inbounds/allLinks"
+    method: GET
+    headers: "{{ xui_api_headers }}"
+    return_content: true
+    status_code: 200
+  register: xui_all_links
+  no_log: true
+
+- name: Select the owner client link
+  ansible.builtin.set_fact:
+    owner_link_matches: "{{ xui_all_links.json.obj | select('search', ru_secrets.owner_uuid) | list }}"
+  no_log: true
+
+- name: Require a generated owner link
+  ansible.builtin.assert:
+    that:
+      - owner_link_matches | length == 1
+    fail_msg: 3x-ui did not generate exactly one owner link.
+  no_log: true
+
+- name: Save the owner link with root-only RU secrets
+  ansible.builtin.copy:
+    content: "{{ ru_secrets | combine({'owner_link': owner_link_matches[0]}) | to_nice_json }}\n"
+    dest: /root/split-vpn-secrets.json
+    owner: root
+    group: root
+    mode: '0600'
+  no_log: true
+
+- name: Create the root-only backup directory
+  ansible.builtin.file:
+    path: /root/split-vpn-backup
+    state: directory
+    owner: root
+    group: root
+    mode: '0700'
+
+- name: Back up the configured 3x-ui database
+  ansible.builtin.copy:
+    src: /etc/x-ui/x-ui.db
+    dest: /root/split-vpn-backup/x-ui.db.after-setup
+    remote_src: true
+    owner: root
+    group: root
+    mode: '0600'
+
+- name: Show deployment result
+  ansible.builtin.debug:
+    msg:
+      - "Panel tunnel: ssh -p {{ ansible_port | default(22) }} -N -L 127.0.0.1:{{ panel_tunnel_local_port }}:127.0.0.1:{{ xui_credentials.port }} {{ ansible_user | default('root') }}@{{ ru_public_ip }}"
+      - "Panel URL: http://127.0.0.1:{{ panel_tunnel_local_port }}/{{ xui_credentials.base_path }}/"
+      - "Panel username: {{ xui_credentials.username }}"
+      - "Panel password: {{ xui_credentials.password }}"
+      - "Client link: {{ owner_link_matches[0] }}"
+      - "Root-only RU secrets: /root/split-vpn-secrets.json"
+      - "Root-only exit secrets on {{ exit_public_ip }}: /root/split-vpn-secrets.json"

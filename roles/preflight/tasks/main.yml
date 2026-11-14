@@ -1,0 +1,16 @@
+- name: Require exactly one RU and one exit host
+  ansible.builtin.assert:
+    that:
+      - (groups['ru'] | default([]) | length) == 1
+      - (groups['exit'] | default([]) | length) == 1
+    fail_msg: Inventory must contain exactly one host in group ru and one in group exit.
+
+- name: Validate non-secret configuration
+  ansible.builtin.assert:
+    that:
+      - xray_version is match('^v[0-9]+\\.[0-9]+\\.[0-9]+$')
+      - xui_version is match('^v[0-9]+\\.[0-9]+\\.[0-9]+$')
+      - ru_reality_target is match('^[A-Za-z0-9.-]+$')
+      - exit_reality_target is match('^[A-Za-z0-9.-]+$')
+      - forced_exit_geosites | length > 0
+      - forced_exit_geoips | length > 0

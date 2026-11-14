@@ -1,0 +1,109 @@
+- name: Test the complete client path
+  block:
+    - name: Render a temporary Xray client configuration
+      ansible.builtin.template:
+        src: e2e-client.json.j2
+        dest: /root/split-vpn-e2e-client.json
+        owner: root
+        group: root
+        mode: '0600'
+      no_log: true
+
+    - name: Validate the temporary Xray client configuration
+      ansible.builtin.command:
+        argv:
+          - /usr/local/bin/xray
+          - run
+          - -test
+          - -config
+          - /root/split-vpn-e2e-client.json
+      changed_when: false
+      no_log: true
+
+    - name: Exercise RU direct and foreign exit routes
+      ansible.builtin.shell: |
+        set -euo pipefail
+        log=$(mktemp)
+        pid=
+        cleanup() {
+          if [[ -n "$pid" ]]; then
+            kill "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+          fi
+          rm -f "$log"
+        }
+        trap cleanup EXIT
+
+        /usr/local/bin/xray run -config /root/split-vpn-e2e-client.json >"$log" 2>&1 &
+        pid=$!
+        for _ in 1 2 3 4 5; do
+          if ss -H -lnt | grep -q '127.0.0.1:19080'; then
+            break
+          fi
+          sleep 1
+        done
+        ss -H -lnt | grep -q '127.0.0.1:19080'
+
+        foreign_ip=$(curl --fail --silent --show-error \
+          --socks5-hostname 127.0.0.1:19080 \
+          --connect-timeout 10 --max-time 25 \
+          https://api.ipify.org)
+        yandex_status=$(curl --silent --show-error -o /dev/null \
+          --socks5-hostname 127.0.0.1:19080 \
+          --connect-timeout 10 --max-time 25 \
+          --write-out '%{http_code}' https://yandex.ru/)
+        youtube_status=$(curl --silent --show-error -o /dev/null \
+          --socks5-hostname 127.0.0.1:19080 \
+          --connect-timeout 10 --max-time 25 \
+          --write-out '%{http_code}' https://www.youtube.com/generate_204)
+        telegram_status=$(curl --silent --show-error -o /dev/null \
+          --socks5-hostname 127.0.0.1:19080 \
+          --connect-timeout 10 --max-time 25 \
+          --write-out '%{http_code}' https://api.telegram.org)
+
+        jq -n \
+          --arg foreign_ip "$foreign_ip" \
+          --argjson yandex_status "$yandex_status" \
+          --argjson youtube_status "$youtube_status" \
+          --argjson telegram_status "$telegram_status" \
+          '{
+            foreign_ip: $foreign_ip,
+            yandex_status: $yandex_status,
+            youtube_status: $youtube_status,
+            telegram_status: $telegram_status
+          }'
+      args:
+        executable: /bin/bash
+      register: e2e_test_command
+      changed_when: false
+      no_log: true
+
+    - name: Load end-to-end results
+      ansible.builtin.set_fact:
+        e2e_result: "{{ e2e_test_command.stdout | from_json }}"
+      no_log: true
+
+    - name: Require successful end-to-end routing
+      ansible.builtin.assert:
+        that:
+          - e2e_result.foreign_ip == exit_public_ip
+          - (e2e_result.yandex_status | int) >= 200
+          - (e2e_result.yandex_status | int) < 500
+          - (e2e_result.youtube_status | int) >= 200
+          - (e2e_result.youtube_status | int) < 400
+          - (e2e_result.telegram_status | int) >= 200
+          - (e2e_result.telegram_status | int) < 500
+        fail_msg: End-to-end VLESS/XHTTP/REALITY verification failed.
+
+    - name: Report successful end-to-end verification
+      ansible.builtin.debug:
+        msg: >-
+          End-to-end test passed: RU services use the RU direct route;
+          foreign traffic, YouTube and Telegram use exit {{ exit_public_ip }}.
+
+  always:
+    - name: Remove the temporary Xray client configuration
+      ansible.builtin.file:
+        path: /root/split-vpn-e2e-client.json
+        state: absent
+      no_log: true
