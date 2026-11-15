@@ -124,11 +124,26 @@
         "protocol": ["bittorrent"],
         "outboundTag": "blocked"
       },
+{% if block_quic %}
+      {
+        "type": "field",
+        "network": "udp",
+        "port": "443",
+        "outboundTag": "blocked"
+      },
+{% endif %}
       {
         "type": "field",
         "domain": [{% for name in forced_exit_geosites %}{{ ('geosite:' ~ name) | to_json }}{% if not loop.last %}, {% endif %}{% endfor %}],
         "outboundTag": "exit-proxy"
       },
+{% if additional_ru_direct_domains | length > 0 %}
+      {
+        "type": "field",
+        "domain": [{% for name in additional_ru_direct_domains %}{{ ('domain:' ~ name) | to_json }}{% if not loop.last %}, {% endif %}{% endfor %}],
+        "outboundTag": "direct"
+      },
+{% endif %}
       {
         "type": "field",
         "domain": ["geosite:category-ru"],

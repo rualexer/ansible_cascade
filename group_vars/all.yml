@@ -20,6 +20,24 @@ forced_exit_geosites:
 forced_exit_geoips:
   - telegram
 
+# Dependencies of Russian services that use non-RU zones and may otherwise
+# leave through the foreign exit. Values are base domains; subdomains match too.
+additional_ru_direct_domains:
+  - 2gis.com
+  - avito.st
+  - mycdn.me
+  - ozonusercontent.com
+  - paywb.com
+  - sberbank.com
+  - tamtam.chat
+  - trbcdn.net
+  - userapi.com
+  - yastatic.net
+
+# Block QUIC globally so applications fall back to TCP/TLS. This improves
+# predictability through the cascade but disables HTTP/3 and QUIC-only apps.
+block_quic: true
+
 # Used only for the final routing self-test.
 ru_direct_test_domain: yandex.ru
 foreign_test_domain: api.ipify.org

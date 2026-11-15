@@ -385,6 +385,28 @@
     port: 443
     timeout: 15
 
+- name: Build routing self-test cases
+  ansible.builtin.set_fact:
+    routing_test_cases: >-
+      {{
+        [
+          {'domain': ru_direct_test_domain, 'expected': 'direct'},
+          {'domain': foreign_test_domain, 'expected': 'exit-proxy'},
+          {'domain': 'www.youtube.com', 'expected': 'exit-proxy'},
+          {'domain': 'api.telegram.org', 'expected': 'exit-proxy'}
+        ]
+        + (
+          [{'domain': additional_ru_direct_domains[0], 'expected': 'direct'}]
+          if (additional_ru_direct_domains | length > 0)
+          else []
+        )
+        + (
+          [{'domain': foreign_test_domain, 'expected': 'blocked', 'network': 'udp'}]
+          if block_quic
+          else []
+        )
+      }}
+
 - name: Verify routing decisions
   ansible.builtin.uri:
     url: "{{ xui_api_url }}/xray/routeTest"
@@ -393,20 +415,12 @@
     body_format: form-urlencoded
     body:
       domain: "{{ item.domain }}"
-      port: 443
-      network: tcp
+      port: "{{ item.port | default(443) }}"
+      network: "{{ item.network | default('tcp') }}"
       inboundTag: in-443-tcp
     return_content: true
     status_code: 200
-  loop:
-    - domain: "{{ ru_direct_test_domain }}"
-      expected: direct
-    - domain: "{{ foreign_test_domain }}"
-      expected: exit-proxy
-    - domain: www.youtube.com
-      expected: exit-proxy
-    - domain: api.telegram.org
-      expected: exit-proxy
+  loop: "{{ routing_test_cases }}"
   register: route_tests
   failed_when: >-
     not (route_tests.json.success | default(false)) or
