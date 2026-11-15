@@ -12,27 +12,90 @@ exit_reality_target: www.hostkey.com
 ru_inbound_remark: RU XHTTP REALITY
 owner_email: owner
 
-# Domains in category-ru and RU IP ranges leave directly from RU. These
-# services are forced through the foreign exit before RU rules are evaluated.
+# Russian domain rules and RU IP ranges leave directly from RU. These services
+# are forced through the foreign exit before RU rules are evaluated.
 forced_exit_geosites:
   - youtube
   - telegram
 forced_exit_geoips:
   - telegram
 
+# The same base rules are used by routing and split DNS. Domain rules are
+# evaluated before geoip:ru so known Russian services never depend on a
+# foreign DNS answer.
+ru_direct_domain_rules:
+  - domain:ru
+  - domain:su
+  - domain:by
+  - domain:xn--p1ai
+  - geosite:category-gov-ru
+  - geosite:category-ru
+  - geosite:vk
+  - geosite:yandex
+
 # Dependencies of Russian services that use non-RU zones and may otherwise
 # leave through the foreign exit. Values are base domains; subdomains match too.
 additional_ru_direct_domains:
+  - 1cfresh.com
+  - 2gis.ae
+  - 2gis.am
+  - 2gis.az
   - 2gis.com
+  - 2gis.com.cy
+  - 2gis.cz
+  - 2gis.ge
+  - 2gis.kg
+  - 2gis.kz
+  - 2gis.tj
+  - 2gis.ua
+  - 2gis.uz
+  - 5post.market
   - avito.st
+  - boosty.to
+  - bronevik.com
+  - donationalerts.com
+  - edadeal.io
+  - fix-price.com
+  - gazprombank.tech
+  - jivochat.com
+  - jivosite.com
+  - kaspersky.com
+  - lenta.com
+  - lmru.tech
+  - magnit.com
+  - megamarket.tech
+  - moex.com
   - mycdn.me
+  - netmonet.co
+  - okko.sport
+  - okko.tv
+  - okolo.app
+  - ozon.com
+  - ozon.com.kz
+  - ozon.kz
+  - ozon.tm
+  - ozonru.me
   - ozonusercontent.com
   - paywb.com
+  - premier.one
   - sberbank.com
+  - sistema-capital.com
   - tamtam.chat
+  - taxsee.com
+  - tbank-online.com
+  - timeweb.cloud
+  - timeweb.com
+  - tips.tips
+  - tochka-tech.com
+  - tochka.com
   - trbcdn.net
   - userapi.com
+  - vk-portal.net
+  - whoosh.bike
+  - x5.tech
+  - x5static.net
   - yastatic.net
+  - youla.io
 
 # Block QUIC globally so applications fall back to TCP/TLS. This improves
 # predictability through the cascade but disables HTTP/3 and QUIC-only apps.

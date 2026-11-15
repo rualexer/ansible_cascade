@@ -14,6 +14,10 @@
       - exit_reality_target is match('^[A-Za-z0-9.-]+$')
       - forced_exit_geosites | length > 0
       - forced_exit_geoips | length > 0
+      - ru_direct_domain_rules is sequence
+      - ru_direct_domain_rules is not string
+      - ru_direct_domain_rules | length > 0
+      - (ru_direct_domain_rules | reject('match', '^(domain|geosite|regexp|full):.+$') | list | length) == 0
       - additional_ru_direct_domains is sequence
       - additional_ru_direct_domains is not string
       - (additional_ru_direct_domains | reject('match', '^[A-Za-z0-9][A-Za-z0-9.-]*\.[A-Za-z0-9-]+$') | list | length) == 0

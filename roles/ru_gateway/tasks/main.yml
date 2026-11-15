@@ -19,6 +19,17 @@
     update_cache: true
     cache_valid_time: 3600
 
+- name: Verify the RU server local DNS resolver
+  ansible.builtin.command:
+    argv:
+      - getent
+      - ahostsv4
+      - "{{ ru_direct_test_domain }}"
+  register: ru_local_dns_probe
+  changed_when: false
+  failed_when:
+    - ru_local_dns_probe.rc != 0 or (ru_local_dns_probe.stdout | trim | length) == 0
+
 - name: Check for an existing 3x-ui database
   ansible.builtin.stat:
     path: /etc/x-ui/x-ui.db

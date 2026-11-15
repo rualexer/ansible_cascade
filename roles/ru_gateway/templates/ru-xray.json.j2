@@ -1,3 +1,4 @@
+{% set effective_ru_direct_domains = ru_direct_domain_rules + (additional_ru_direct_domains | map('regex_replace', '^', 'domain:') | list) %}
 {
   "api": {
     "services": ["HandlerService", "LoggerService", "StatsService", "RoutingService"],
@@ -13,7 +14,14 @@
   "dns": {
     "tag": "dns-query",
     "queryStrategy": "UseIPv4",
+    "disableFallbackIfMatch": true,
     "servers": [
+      {
+        "address": "localhost",
+        "domains": [{% for rule in effective_ru_direct_domains %}{{ rule | to_json }}{% if not loop.last %}, {% endif %}{% endfor %}],
+        "queryStrategy": "UseIPv4",
+        "skipFallback": true
+      },
       {
         "address": "https://1.1.1.1/dns-query",
         "skipFallback": false
@@ -137,16 +145,9 @@
         "domain": [{% for name in forced_exit_geosites %}{{ ('geosite:' ~ name) | to_json }}{% if not loop.last %}, {% endif %}{% endfor %}],
         "outboundTag": "exit-proxy"
       },
-{% if additional_ru_direct_domains | length > 0 %}
       {
         "type": "field",
-        "domain": [{% for name in additional_ru_direct_domains %}{{ ('domain:' ~ name) | to_json }}{% if not loop.last %}, {% endif %}{% endfor %}],
-        "outboundTag": "direct"
-      },
-{% endif %}
-      {
-        "type": "field",
-        "domain": ["geosite:category-ru"],
+        "domain": [{% for rule in effective_ru_direct_domains %}{{ rule | to_json }}{% if not loop.last %}, {% endif %}{% endfor %}],
         "outboundTag": "direct"
       },
       {
