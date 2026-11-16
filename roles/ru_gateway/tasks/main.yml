@@ -62,6 +62,56 @@
   ansible.builtin.command: /usr/local/sbin/verify-3x-ui-private
   changed_when: false
 
+- name: Create the root-only backup directory
+  ansible.builtin.file:
+    path: /root/split-vpn-backup
+    state: directory
+    owner: root
+    group: root
+    mode: '0700'
+
+- name: Check for the database backup before the first managed change
+  ansible.builtin.stat:
+    path: /root/split-vpn-backup/x-ui.db.before-first-managed-run
+  register: first_managed_database_backup
+
+- name: Preserve the database before the first managed change
+  ansible.builtin.command:
+    argv:
+      - sqlite3
+      - /etc/x-ui/x-ui.db
+      - ".backup '/root/split-vpn-backup/x-ui.db.before-first-managed-run'"
+  when: not first_managed_database_backup.stat.exists
+
+- name: Protect the database backup permissions
+  ansible.builtin.file:
+    path: /root/split-vpn-backup/x-ui.db.before-first-managed-run
+    owner: root
+    group: root
+    mode: '0600'
+
+- name: Snapshot existing client emails before managed changes
+  ansible.builtin.command:
+    argv:
+      - sqlite3
+      - -noheader
+      - /etc/x-ui/x-ui.db
+      - SELECT email FROM clients ORDER BY email;
+  register: preexisting_client_emails
+  changed_when: false
+  no_log: true
+
+- name: Snapshot existing client attachments before managed changes
+  ansible.builtin.command:
+    argv:
+      - sqlite3
+      - -noheader
+      - /etc/x-ui/x-ui.db
+      - SELECT clients.email || ':' || client_inbounds.inbound_id FROM clients JOIN client_inbounds ON client_inbounds.client_id = clients.id ORDER BY clients.email, client_inbounds.inbound_id;
+  register: preexisting_client_attachments
+  changed_when: false
+  no_log: true
+
 - name: Read private panel credentials
   ansible.builtin.shell: |
     set -euo pipefail
@@ -157,6 +207,41 @@
     ru_secrets: "{{ ru_secrets_file.content | b64decode | from_json }}"
   no_log: true
 
+- name: Validate the preserved owner UUID
+  ansible.builtin.assert:
+    that:
+      - ru_secrets.owner_uuid is match('^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$')
+    fail_msg: The preserved owner UUID is invalid.
+  no_log: true
+
+- name: Find an existing client with the preserved owner UUID
+  ansible.builtin.command:
+    argv:
+      - sqlite3
+      - -noheader
+      - /etc/x-ui/x-ui.db
+      - "SELECT email FROM clients WHERE uuid = '{{ ru_secrets.owner_uuid }}' ORDER BY id;"
+  register: preserved_owner_matches
+  changed_when: false
+  no_log: true
+
+- name: Require an unambiguous preserved owner identity
+  ansible.builtin.assert:
+    that:
+      - preserved_owner_matches.stdout_lines | length <= 1
+    fail_msg: Multiple clients use the preserved owner UUID; resolve the duplicate identities first.
+  no_log: true
+
+- name: Select the effective owner email
+  ansible.builtin.set_fact:
+    effective_owner_email: >-
+      {{
+        preserved_owner_matches.stdout_lines[0]
+        if (preserved_owner_matches.stdout_lines | length == 1)
+        else owner_email
+      }}
+  no_log: true
+
 - name: Render the RU Xray routing template
   ansible.builtin.template:
     src: ru-xray.json.j2
@@ -227,6 +312,18 @@
     existing_inbound_id: "{{ managed_inbound_matches[0].id if (managed_inbound_matches | length > 0) else 0 }}"
   no_log: true
 
+- name: Remember clients attached to the existing managed RU inbound
+  ansible.builtin.command:
+    argv:
+      - sqlite3
+      - -noheader
+      - /etc/x-ui/x-ui.db
+      - "SELECT clients.email FROM clients JOIN client_inbounds ON client_inbounds.client_id = clients.id WHERE client_inbounds.inbound_id = {{ existing_inbound_id | int }} ORDER BY clients.email;"
+  register: preexisting_managed_inbound_client_emails
+  when: (existing_inbound_id | int) != 0
+  changed_when: false
+  no_log: true
+
 - name: Create the managed RU inbound
   ansible.builtin.uri:
     url: "{{ xui_api_url }}/inbounds/add"
@@ -260,9 +357,30 @@
     ru_inbound_id: "{{ existing_inbound_id if (existing_inbound_id | int) != 0 else xui_inbound_add.json.obj.id }}"
   no_log: true
 
+- name: Restore clients previously attached to the managed RU inbound
+  ansible.builtin.uri:
+    url: "{{ xui_api_url }}/clients/bulkAttach"
+    method: POST
+    headers: "{{ xui_api_headers }}"
+    body_format: json
+    body:
+      emails: "{{ preexisting_managed_inbound_client_emails.stdout_lines }}"
+      inboundIds:
+        - "{{ ru_inbound_id | int }}"
+    return_content: true
+    status_code: 200
+  register: xui_restore_managed_clients
+  when:
+    - (existing_inbound_id | int) != 0
+    - (preexisting_managed_inbound_client_emails.stdout_lines | default([]) | length) > 0
+  failed_when: >-
+    not (xui_restore_managed_clients.json.success | default(false)) or
+    (xui_restore_managed_clients.json.obj.errors | default([], true) | length) > 0
+  no_log: true
+
 - name: Check for the owner client
   ansible.builtin.uri:
-    url: "{{ xui_api_url }}/clients/get/{{ owner_email | urlencode }}"
+    url: "{{ xui_api_url }}/clients/get/{{ effective_owner_email | urlencode }}"
     method: GET
     headers: "{{ xui_api_headers }}"
     return_content: true
@@ -275,7 +393,7 @@
     that:
       - xui_owner_client.json.obj.client.uuid == ru_secrets.owner_uuid
     fail_msg: >-
-      A client with owner_email already exists but has a different UUID.
+      A client with effective_owner_email already exists but has a different UUID.
       Choose another owner_email or migrate that client deliberately.
   when: xui_owner_client.json.success | default(false)
   no_log: true
@@ -288,7 +406,7 @@
     body_format: json
     body:
       client:
-        email: "{{ owner_email }}"
+        email: "{{ effective_owner_email }}"
         id: "{{ ru_secrets.owner_uuid }}"
         totalGB: 0
         expiryTime: 0
@@ -308,7 +426,7 @@
 
 - name: Attach an existing owner client to the managed inbound
   ansible.builtin.uri:
-    url: "{{ xui_api_url }}/clients/{{ owner_email | urlencode }}/attach"
+    url: "{{ xui_api_url }}/clients/{{ effective_owner_email | urlencode }}/attach"
     method: POST
     headers: "{{ xui_api_headers }}"
     body_format: json
@@ -382,6 +500,38 @@
   register: xui_host_update
   when: (managed_host_matches | length) > 0
   failed_when: not (xui_host_update.json.success | default(false))
+  no_log: true
+
+- name: Read client emails after managed changes
+  ansible.builtin.command:
+    argv:
+      - sqlite3
+      - -noheader
+      - /etc/x-ui/x-ui.db
+      - SELECT email FROM clients ORDER BY email;
+  register: managed_client_emails
+  changed_when: false
+  no_log: true
+
+- name: Read client attachments after managed changes
+  ansible.builtin.command:
+    argv:
+      - sqlite3
+      - -noheader
+      - /etc/x-ui/x-ui.db
+      - SELECT clients.email || ':' || client_inbounds.inbound_id FROM clients JOIN client_inbounds ON client_inbounds.client_id = clients.id ORDER BY clients.email, client_inbounds.inbound_id;
+  register: managed_client_attachments
+  changed_when: false
+  no_log: true
+
+- name: Require preservation of all pre-existing clients and attachments
+  ansible.builtin.assert:
+    that:
+      - (preexisting_client_emails.stdout_lines | difference(managed_client_emails.stdout_lines) | length) == 0
+      - (preexisting_client_attachments.stdout_lines | difference(managed_client_attachments.stdout_lines) | length) == 0
+    fail_msg: >-
+      A pre-existing client or inbound attachment disappeared during the managed
+      update. Restore the before-first-managed-run database backup before proceeding.
   no_log: true
 
 - name: Wait for the public RU VLESS listener
@@ -469,19 +619,16 @@
     mode: '0600'
   no_log: true
 
-- name: Create the root-only backup directory
-  ansible.builtin.file:
-    path: /root/split-vpn-backup
-    state: directory
-    owner: root
-    group: root
-    mode: '0700'
-
 - name: Back up the configured 3x-ui database
-  ansible.builtin.copy:
-    src: /etc/x-ui/x-ui.db
-    dest: /root/split-vpn-backup/x-ui.db.after-setup
-    remote_src: true
+  ansible.builtin.command:
+    argv:
+      - sqlite3
+      - /etc/x-ui/x-ui.db
+      - ".backup '/root/split-vpn-backup/x-ui.db.after-setup'"
+
+- name: Protect the configured database backup permissions
+  ansible.builtin.file:
+    path: /root/split-vpn-backup/x-ui.db.after-setup
     owner: root
     group: root
     mode: '0600'

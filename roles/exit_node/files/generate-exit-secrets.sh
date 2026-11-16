@@ -33,6 +33,13 @@ if [[ -z ${uuid:-} || -z ${private_key:-} || -z ${public_key:-} || -z ${short_id
   xhttp_path=/$(openssl rand -hex 20)
 fi
 
+# Older manual deployments stored the path without its leading slash while
+# the active Xray configuration used the normalized form. Preserve the active
+# client-visible value during adoption.
+if [[ -n ${xhttp_path:-} && $xhttp_path != /* ]]; then
+  xhttp_path=/$xhttp_path
+fi
+
 [[ -n "$uuid" && -n "$private_key" && -n "$public_key" ]] || {
   printf 'could not generate exit Xray secrets\n' >&2
   exit 1
